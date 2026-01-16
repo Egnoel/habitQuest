@@ -21,6 +21,60 @@
         .xp-bar-animate {
             transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
         }
+
+        /* Celebration Animations */
+        @keyframes gold-glow-pulse {
+            0% { box-shadow: 0 0 0px 0px rgba(234, 179, 8, 0); }
+            50% { box-shadow: 0 0 30px 10px rgba(234, 179, 8, 0.6); }
+            100% { box-shadow: 0 0 0px 0px rgba(234, 179, 8, 0); }
+        }
+
+        @keyframes gold-glow-subtle {
+            0% { box-shadow: 0 0 5px 0px rgba(251, 191, 36, 0.1); }
+            50% { box-shadow: 0 0 20px 2px rgba(251, 191, 36, 0.3); }
+            100% { box-shadow: 0 0 5px 0px rgba(251, 191, 36, 0.1); }
+        }
+
+        @keyframes trophy-float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-6px); }
+            100% { transform: translateY(0px); }
+        }
+
+        @keyframes sparkle-float {
+            0% { transform: translate(0, 0) scale(0) rotate(0deg); opacity: 0; }
+            50% { opacity: 1; }
+            100% { transform: translate(var(--tw-translate-x), var(--tw-translate-y)) scale(1) rotate(180deg); opacity: 0; }
+        }
+
+        @keyframes card-pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .animate-gold-glow {
+            animation: gold-glow-pulse 1.5s ease-out infinite;
+        }
+
+        .animate-gold-subtle {
+            animation: gold-glow-subtle 3s ease-in-out infinite;
+        }
+
+        .animate-trophy-float {
+            animation: trophy-float 3s ease-in-out infinite;
+        }
+
+        .animate-pop {
+            animation: card-pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .sparkle-particle {
+            position: absolute;
+            pointer-events: none;
+            z-index: 50;
+            animation: sparkle-float 1s ease-out forwards;
+        }
     </style>
 <script type="importmap">
 {

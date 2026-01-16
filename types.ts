@@ -7,9 +7,11 @@ export interface Habit {
   category: string;
   description: string;
   streak: number;
-  lastCompleted: string | null; // ISO Date
+  lastCompleted: string | null; // ISO Date (YYYY-MM-DD)
+  history: string[]; // Array of ISO Dates (YYYY-MM-DD)
   xp: number;
   icon: string;
+  targetStreak?: number; 
 }
 
 export interface UserStats {
