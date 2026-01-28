@@ -11,17 +11,13 @@ import {
   TrendingUp, 
   Award, 
   User as UserIcon, 
-  Ghost,
   Trash2,
-  Sparkles, 
   ChevronRight,
   Settings as SettingsIcon,
   LogOut,
   ArrowLeft,
   ShieldCheck,
   Save,
-  Target,
-  Medal,
   Zap,
   RotateCcw,
   X,
@@ -35,7 +31,9 @@ import {
   Filter,
   SortAsc,
   Info,
-  ChevronDown
+  ChevronDown,
+  PauseCircle,
+  PlayCircle
 } from 'lucide-react';
 
 type View = 'login' | 'dashboard' | 'settings';
@@ -53,6 +51,7 @@ interface Category {
 }
 
 const COMMON_ICONS = ['🍎', '⚡', '🧠', '💪', '📚', '🧘', '💧', '🥗', '🏃', '🎨', '🎸', '💻', '💸', '🧹', '🌱', '🌙'];
+const COMBO_WINDOW_MS = 60000;
 
 const App: React.FC = () => {
   // --- State ---
@@ -66,41 +65,45 @@ const App: React.FC = () => {
     username: ''
   });
   
-  // Creation state
   const [isAdding, setIsAdding] = useState(false);
   const [newHabitName, setNewHabitName] = useState('');
   const [newHabitDescription, setNewHabitDescription] = useState('');
   const [newHabitCat, setNewHabitCat] = useState(CATEGORIES[0].name);
   const [newHabitTarget, setNewHabitTarget] = useState<string>('');
   
-  // Filter & Sort state
   const [filterCategory, setFilterCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<SortOption>('name');
 
-  // UI status
   const [aiTip, setAiTip] = useState('');
   const [showLevelUp, setShowLevelUp] = useState(false);
   const [undoAction, setUndoAction] = useState<UndoAction | null>(null);
   const [celebratingHabitId, setCelebratingHabitId] = useState<string | null>(null);
+  
+  // Inline Edit State
   const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
   const [inlineEditName, setInlineEditName] = useState('');
   const [inlineEditIcon, setInlineEditIcon] = useState('');
+  const [inlineEditCat, setInlineEditCat] = useState('');
   const [inlineEditDescription, setInlineEditDescription] = useState('');
+  
   const [showHistoryId, setShowHistoryId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Settings edit state
+  const [comboCount, setComboCount] = useState(0);
+  const [lastCompletionTime, setLastCompletionTime] = useState(0);
+  const [showCombo, setShowCombo] = useState(false);
+
   const [editUsername, setEditUsername] = useState('');
   const [newCatName, setNewCatName] = useState('');
   const [newCatIcon, setNewCatIcon] = useState(COMMON_ICONS[0]);
   const [editingCat, setEditingCat] = useState<string | null>(null);
 
-  // Refs for timers
   const undoTimerRef = useRef<number | null>(null);
   const celebrationTimerRef = useRef<number | null>(null);
+  const comboTimerRef = useRef<number | null>(null);
 
-  // --- Sound Effects ---
-  const playSound = (type: 'success' | 'level' | 'undo') => {
+  // --- Audio ---
+  const playSound = (type: 'success' | 'level' | 'undo' | 'combo') => {
     try {
       const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) return;
@@ -109,38 +112,36 @@ const App: React.FC = () => {
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
-
       const now = ctx.currentTime;
       if (type === 'success') {
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(523.25, now); // C5
-        osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.1); // C6
+        osc.frequency.setValueAtTime(523.25, now);
+        osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.1);
         gain.gain.setValueAtTime(0.05, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
-        osc.start(now);
-        osc.stop(now + 0.2);
+        osc.start(now); osc.stop(now + 0.2);
       } else if (type === 'level') {
         osc.type = 'triangle';
-        const freqs = [523.25, 659.25, 783.99, 1046.50]; // C Major arpeggio
-        freqs.forEach((f, i) => {
-          osc.frequency.setValueAtTime(f, now + i * 0.1);
-        });
+        [523.25, 659.25, 783.99, 1046.50].forEach((f, i) => osc.frequency.setValueAtTime(f, now + i * 0.1));
         gain.gain.setValueAtTime(0.05, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
-        osc.start(now);
-        osc.stop(now + 0.6);
+        osc.start(now); osc.stop(now + 0.6);
       } else if (type === 'undo') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(440, now);
         osc.frequency.exponentialRampToValueAtTime(220, now + 0.15);
         gain.gain.setValueAtTime(0.05, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
-        osc.start(now);
-        osc.stop(now + 0.2);
+        osc.start(now); osc.stop(now + 0.2);
+      } else if (type === 'combo') {
+        osc.type = 'square';
+        const baseFreq = 440 + (comboCount * 110);
+        osc.frequency.setValueAtTime(baseFreq, now);
+        gain.gain.setValueAtTime(0.02, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        osc.start(now); osc.stop(now + 0.1);
       }
-    } catch (e) {
-      console.warn('Audio playback failed', e);
-    }
+    } catch (e) {}
   };
 
   // --- Persistence ---
@@ -149,24 +150,10 @@ const App: React.FC = () => {
     const savedUser = localStorage.getItem('habit_quest_user');
     const savedView = localStorage.getItem('habit_quest_view');
     const savedCats = localStorage.getItem('habit_quest_categories');
-    
-    if (savedHabits) {
-        const parsedHabits: Habit[] = JSON.parse(savedHabits);
-        setHabits(parsedHabits.map(h => ({ 
-          ...h, 
-          history: h.history || [],
-          description: h.description || ''
-        })));
-    }
+    if (savedHabits) setHabits(JSON.parse(savedHabits).map((h: any) => ({ ...h, history: h.history || [], description: h.description || '', isPaused: !!h.isPaused })));
     if (savedCats) setCategories(JSON.parse(savedCats));
-    if (savedUser) {
-      const parsedUser = JSON.parse(savedUser);
-      setUser(parsedUser);
-      setEditUsername(parsedUser.username);
-    }
-    if (savedView === 'dashboard' || savedView === 'settings') {
-      setView(savedView as View);
-    }
+    if (savedUser) { const u = JSON.parse(savedUser); setUser(u); setEditUsername(u.username); }
+    if (savedView) setView(savedView as View);
   }, []);
 
   useEffect(() => {
@@ -176,34 +163,18 @@ const App: React.FC = () => {
     localStorage.setItem('habit_quest_categories', JSON.stringify(categories));
   }, [habits, user, view, categories]);
 
-  useEffect(() => {
-    return () => {
-      if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
-      if (celebrationTimerRef.current) window.clearTimeout(celebrationTimerRef.current);
-    };
-  }, []);
-
   // --- Helpers ---
   const getCurrentRank = (streak: number): { rank: RankType; color: string } => {
     let current = MILESTONES[0];
-    for (const m of MILESTONES) {
-      if (streak >= m.days) current = m;
-      else break;
-    }
+    for (const m of MILESTONES) { if (streak >= m.days) current = m; else break; }
     return { rank: current.rank, color: current.color };
   };
 
-  const getNextMilestone = (streak: number) => {
-    return MILESTONES.find(m => m.days > streak) || null;
-  };
-
-  // --- Filtered & Sorted Habits ---
   const displayHabits = useMemo(() => {
-    let filtered = filterCategory === 'All' 
-      ? habits 
-      : habits.filter(h => h.category === filterCategory);
-
+    let filtered = filterCategory === 'All' ? habits : habits.filter(h => h.category === filterCategory);
     return [...filtered].sort((a, b) => {
+      if (a.isPaused && !b.isPaused) return 1;
+      if (!a.isPaused && b.isPaused) return -1;
       if (sortBy === 'name') return a.name.localeCompare(b.name);
       if (sortBy === 'streak') return b.streak - a.streak;
       if (sortBy === 'xp') return b.xp - a.xp;
@@ -211,912 +182,611 @@ const App: React.FC = () => {
     });
   }, [habits, filterCategory, sortBy]);
 
-  // --- Stats Derivations ---
   const xpByDay = useMemo(() => {
     const last7Days = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+      const d = new Date(); d.setDate(d.getDate() - i);
       return d.toISOString().split('T')[0];
     }).reverse();
-
     return last7Days.map(date => {
       let dailyXp = 0;
       let completedCount = 0;
-      
-      habits.forEach(habit => {
-        if (habit.history.includes(date)) {
-          dailyXp += XP_PER_CHECKIN;
-          completedCount++;
-        }
-      });
-
-      const allCompleted = habits.length > 0 && completedCount === habits.length;
+      const activeOnDate = habits.filter(h => !h.isPaused);
+      habits.forEach(habit => { if (habit.history.includes(date)) { dailyXp += XP_PER_CHECKIN; completedCount++; } });
+      const allCompleted = activeOnDate.length > 0 && completedCount >= activeOnDate.length;
       return { date, xp: dailyXp, allCompleted };
     });
   }, [habits]);
 
-  const categoryProgress = useMemo(() => {
-    return categories.map(cat => {
+  const movingAverageXp = useMemo(() => {
+    const values = xpByDay.map(v => v.xp);
+    const trend = []; let sum = 0;
+    for (let i = 0; i < values.length; i++) { sum += values[i]; trend.push(sum / (i + 1)); }
+    return trend;
+  }, [xpByDay]);
+
+  const categoryProgress = useMemo(() => categories.map(cat => {
       const catHabits = habits.filter(h => h.category === cat.name);
       if (catHabits.length === 0) return { ...cat, progress: 0, total: 0, reached: 0 };
-      
       const habitsWithTarget = catHabits.filter(h => h.targetStreak && h.targetStreak > 0);
       const reached = habitsWithTarget.filter(h => h.streak >= (h.targetStreak || 0)).length;
       const progress = habitsWithTarget.length > 0 ? (reached / habitsWithTarget.length) * 100 : 0;
-      
       return { ...cat, progress, total: habitsWithTarget.length, reached };
-    });
-  }, [habits, categories]);
+    }), [habits, categories]);
 
-  // --- Actions ---
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editUsername.trim()) return;
-    setUser(prev => ({ ...prev, username: editUsername }));
-    setView('dashboard');
-  };
+  // --- Handlers ---
+  const handleLogin = (e: React.FormEvent) => { e.preventDefault(); if (editUsername.trim()) { setUser(p => ({ ...p, username: editUsername })); setView('dashboard'); } };
 
   const handleLogout = () => {
+    localStorage.removeItem('habit_quest_habits');
+    localStorage.removeItem('habit_quest_user');
+    localStorage.removeItem('habit_quest_view');
+    localStorage.removeItem('habit_quest_categories');
+    setUser({ xp: 0, level: 1, totalXp: 0, username: '' });
+    setHabits([]);
+    setCategories(CATEGORIES);
     setView('login');
-  };
-
-  const saveSettings = () => {
-    setUser(prev => ({ ...prev, username: editUsername }));
-    setView('dashboard');
   };
 
   const addHabit = () => {
     if (!newHabitName.trim()) return;
     const cat = categories.find(c => c.name === newHabitCat);
-    const habit: Habit = {
-      id: crypto.randomUUID(),
-      name: newHabitName,
-      description: newHabitDescription,
-      category: newHabitCat,
-      streak: 0,
-      lastCompleted: null,
-      history: [],
-      xp: 0,
-      icon: cat?.icon || '⭐',
-      targetStreak: newHabitTarget ? parseInt(newHabitTarget) : undefined
-    };
-    setHabits([...habits, habit]);
-    setNewHabitName('');
-    setNewHabitDescription('');
-    setNewHabitTarget('');
-    setIsAdding(false);
+    setHabits([...habits, { 
+      id: crypto.randomUUID(), 
+      name: newHabitName, 
+      description: newHabitDescription, 
+      category: newHabitCat, 
+      streak: 0, 
+      lastCompleted: null, 
+      history: [], 
+      xp: 0, 
+      icon: cat?.icon || '⭐', 
+      targetStreak: newHabitTarget ? parseInt(newHabitTarget) : undefined,
+      isPaused: false
+    }]);
+    setNewHabitName(''); setNewHabitDescription(''); setNewHabitTarget(''); setIsAdding(false);
   };
 
-  const removeHabit = (id: string) => {
-    setHabits(habits.filter(h => h.id !== id));
-    if (editingHabitId === id) setEditingHabitId(null);
-    setConfirmDeleteId(null);
-  };
+  const removeHabit = (id: string) => { setHabits(habits.filter(h => h.id !== id)); setConfirmDeleteId(null); };
 
-  const undoCompletion = () => {
-    if (!undoAction) return;
-    playSound('undo');
-    setHabits(undoAction.previousHabits);
-    setUser(undoAction.previousUser);
-    setUndoAction(null);
-    setCelebratingHabitId(null);
-    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
-  };
-
-  const completeHabit = async (id: string) => {
-    const today = new Date().toISOString().split('T')[0];
-    const habitIndex = habits.findIndex(h => h.id === id);
-    if (habitIndex === -1) return;
-
-    const habit = habits[habitIndex];
-    if (habit.lastCompleted === today) return;
-
-    playSound('success');
-    setCelebratingHabitId(id);
-    if (celebrationTimerRef.current) window.clearTimeout(celebrationTimerRef.current);
-    celebrationTimerRef.current = window.setTimeout(() => setCelebratingHabitId(null), 3000);
-
-    const snapshotHabits = JSON.parse(JSON.stringify(habits));
-    const snapshotUser = JSON.parse(JSON.stringify(user));
-
-    let newStreak = habit.streak;
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
-
-    if (habit.lastCompleted === yesterdayStr || !habit.lastCompleted) {
-      newStreak += 1;
-    } else {
-      newStreak = 1;
-    }
-
-    const streakBonus = Math.floor(newStreak * STREAK_BONUS_MULTIPLIER);
-    const totalGained = XP_PER_CHECKIN + streakBonus;
-
-    let newXp = user.xp + totalGained;
-    let newLevel = user.level;
-    let leveledUp = false;
-
-    while (newXp >= XP_PER_LEVEL) {
-      newXp -= XP_PER_LEVEL;
-      newLevel += 1;
-      leveledUp = true;
-    }
-
-    if (leveledUp) {
-      playSound('level');
-      setShowLevelUp(true);
-      setTimeout(() => setShowLevelUp(false), 3000);
-    }
-
-    setUser({
-      ...user,
-      xp: newXp,
-      level: newLevel,
-      totalXp: user.totalXp + totalGained
-    });
-
-    const newHabits = [...habits];
-    newHabits[habitIndex] = {
-      ...habit,
-      streak: newStreak,
-      lastCompleted: today,
-      history: [...habit.history, today],
-      xp: habit.xp + totalGained
-    };
-    setHabits(newHabits);
-
-    setUndoAction({
-      habitId: id,
-      previousHabits: snapshotHabits,
-      previousUser: snapshotUser
-    });
-
-    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
-    undoTimerRef.current = window.setTimeout(() => {
-      setUndoAction(null);
-    }, 10000);
-
-    const tip = await getMotivationalTip(habit.name, newStreak);
-    setAiTip(tip);
+  const togglePauseHabit = (id: string) => {
+    setHabits(prev => prev.map(h => h.id === id ? { ...h, isPaused: !h.isPaused } : h));
   };
 
   const startInlineEdit = (habit: Habit) => {
     setEditingHabitId(habit.id);
     setInlineEditName(habit.name);
     setInlineEditIcon(habit.icon);
+    setInlineEditCat(habit.category);
     setInlineEditDescription(habit.description || '');
-  };
-
-  const cancelInlineEdit = () => {
-    setEditingHabitId(null);
   };
 
   const saveInlineEdit = () => {
     if (!editingHabitId || !inlineEditName.trim()) return;
     setHabits(prev => prev.map(h => 
       h.id === editingHabitId 
-        ? { ...h, name: inlineEditName, icon: inlineEditIcon, description: inlineEditDescription } 
+        ? { ...h, name: inlineEditName, icon: inlineEditIcon, category: inlineEditCat, description: inlineEditDescription } 
         : h
     ));
     setEditingHabitId(null);
   };
 
+  const undoCompletion = () => { if (undoAction) { playSound('undo'); setHabits(undoAction.previousHabits); setUser(undoAction.previousUser); setUndoAction(null); setCelebratingHabitId(null); setComboCount(0); setShowCombo(false); } };
+  
+  const completeHabit = async (id: string) => {
+    const today = new Date().toISOString().split('T')[0];
+    const habitIndex = habits.findIndex(h => h.id === id);
+    if (habitIndex === -1 || habits[habitIndex].lastCompleted === today || habits[habitIndex].isPaused) return;
+
+    const habit = habits[habitIndex];
+    const now = Date.now();
+    if (now - lastCompletionTime < COMBO_WINDOW_MS) { setComboCount(c => c + 1); setShowCombo(true); playSound('combo'); } 
+    else { setComboCount(0); setShowCombo(false); playSound('success'); }
+    setLastCompletionTime(now);
+
+    setCelebratingHabitId(id);
+    if (celebrationTimerRef.current) clearTimeout(celebrationTimerRef.current);
+    celebrationTimerRef.current = setTimeout(() => setCelebratingHabitId(null), 3000);
+
+    const snapshotHabits = JSON.parse(JSON.stringify(habits));
+    const snapshotUser = JSON.parse(JSON.stringify(user));
+
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    const yStr = yesterday.toISOString().split('T')[0];
+    const newStreak = (habit.lastCompleted === yStr || !habit.lastCompleted) ? habit.streak + 1 : 1;
+
+    const streakBonus = Math.floor(newStreak * STREAK_BONUS_MULTIPLIER);
+    const comboBonus = comboCount * 50;
+    const totalGained = XP_PER_CHECKIN + streakBonus + comboBonus;
+
+    let nXp = user.xp + totalGained;
+    let nLvl = user.level;
+    if (nXp >= XP_PER_LEVEL) { nXp -= XP_PER_LEVEL; nLvl++; setShowLevelUp(true); playSound('level'); setTimeout(() => setShowLevelUp(false), 3000); }
+
+    setUser({ ...user, xp: nXp, level: nLvl, totalXp: user.totalXp + totalGained });
+    const nHabits = [...habits];
+    nHabits[habitIndex] = { ...habit, streak: newStreak, lastCompleted: today, history: [...habit.history, today], xp: habit.xp + totalGained };
+    setHabits(nHabits);
+
+    setUndoAction({ habitId: id, previousHabits: snapshotHabits, previousUser: snapshotUser });
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => setUndoAction(null), 10000);
+
+    const tip = await getMotivationalTip(habit.name, newStreak);
+    setAiTip(tip);
+  };
+
   const addCategory = () => {
     if (!newCatName.trim()) return;
-    if (editingCat) {
-      setCategories(categories.map(c => c.name === editingCat ? { name: newCatName, icon: newCatIcon } : c));
-      setEditingCat(null);
-    } else {
-      setCategories([...categories, { name: newCatName, icon: newCatIcon }]);
-    }
-    setNewCatName('');
-    setNewCatIcon(COMMON_ICONS[0]);
-  };
-
-  const removeCategory = (name: string) => {
-    setCategories(categories.filter(c => c.name !== name));
-  };
-
-  const startEditCategory = (cat: Category) => {
-    setNewCatName(cat.name);
-    setNewCatIcon(cat.icon);
-    setEditingCat(cat.name);
+    if (editingCat) setCategories(categories.map(c => c.name === editingCat ? { name: newCatName, icon: newCatIcon } : c));
+    else setCategories([...categories, { name: newCatName, icon: newCatIcon }]);
+    setNewCatName(''); setEditingCat(null);
   };
 
   const xpProgress = (user.xp / XP_PER_LEVEL) * 100;
 
-  // --- UI Components ---
-  const XPBarChart = () => {
-    const maxVal = Math.max(...xpByDay.map(v => v.xp), 500);
-    return (
-      <div className="h-32 flex items-end justify-between gap-1 px-2 mt-4">
-        {xpByDay.map(({ date, xp, allCompleted }, idx) => {
-          const height = (xp / maxVal) * 100;
-          const isToday = idx === xpByDay.length - 1;
-          return (
-            <div key={date} className="flex-1 flex flex-col items-center gap-1.5 group relative">
-              <div className="absolute bottom-full mb-2 opacity-0 group-hover:opacity-100 bg-slate-800 text-xs px-2 py-1 rounded-md transition-opacity pointer-events-none z-10 whitespace-nowrap border border-slate-700">
-                {xp} XP {allCompleted && '✨'}
-              </div>
-              
-              {allCompleted && (
-                <div className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.6)]" title="Dia Perfeito!"></div>
-              )}
-              
-              <div 
-                className={`w-full rounded-t-lg transition-all duration-700 ease-out relative ${isToday ? 'bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)]' : 'bg-slate-700 hover:bg-slate-600'}`}
-                style={{ height: `${height}%`, minHeight: '4px' }}
-              >
-                {allCompleted && <div className="absolute inset-0 bg-white/10 rounded-t-lg"></div>}
-              </div>
-              
-              <span className="text-[10px] text-slate-500 font-bold uppercase truncate max-w-full">
-                {new Date(date).toLocaleDateString('pt-PT', { weekday: 'short' })}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const LoginPage = () => (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="glass max-w-md w-full rounded-[2.5rem] p-8 lg:p-12 shadow-2xl relative overflow-hidden text-center space-y-8">
-        <div className="absolute -top-24 -left-24 w-64 h-64 bg-indigo-500/20 blur-[80px] rounded-full"></div>
-        <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-purple-500/20 blur-[80px] rounded-full"></div>
-        
-        <div className="space-y-4">
-          <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl mx-auto flex items-center justify-center shadow-lg shadow-indigo-500/20 rotate-3">
-            <ShieldCheck size={40} className="text-white" />
+  return (
+    <div className="min-h-screen bg-[#0f172a] text-slate-50">
+      {/* LOGIN VIEW */}
+      {view === 'login' && (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="glass max-w-md w-full rounded-[2.5rem] p-8 lg:p-12 shadow-2xl text-center space-y-8 relative overflow-hidden">
+            <div className="absolute -top-24 -left-24 w-64 h-64 bg-indigo-500/20 blur-[80px] rounded-full"></div>
+            <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl mx-auto flex items-center justify-center shadow-lg rotate-3"><ShieldCheck size={40} className="text-white" /></div>
+            <div className="space-y-2"><h1 className="text-4xl font-extrabold text-white">HabitQuest</h1><p className="text-slate-400 font-medium">A tua aventura épica começa aqui.</p></div>
+            <form onSubmit={handleLogin} className="space-y-6 text-left">
+              <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Nome do Herói</label>
+              <input autoFocus type="text" value={editUsername} onChange={e => setEditUsername(e.target.value)} placeholder="Como te chamas?" className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 text-white" /></div>
+              <button type="submit" disabled={!editUsername.trim()} className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all shadow-xl hover:scale-[1.02] flex items-center justify-center gap-3">Começar Jornada <ChevronRight size={20} /></button>
+            </form>
           </div>
-          <h1 className="text-4xl font-extrabold tracking-tight text-white">HabitQuest</h1>
-          <p className="text-slate-400 font-medium">Transforma a tua rotina numa aventura épica.</p>
         </div>
+      )}
 
-        <form onSubmit={handleLogin} className="space-y-6 text-left relative z-10">
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Nome do Herói</label>
-            <input 
-              autoFocus
-              type="text" 
-              value={editUsername}
-              onChange={(e) => setEditUsername(e.target.value)}
-              placeholder="Como te chamaremos?"
-              className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 transition-all text-lg font-medium text-white"
-            />
-          </div>
-          <button 
-            type="submit"
-            disabled={!editUsername.trim()}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-indigo-600/20 hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-3 text-lg"
-          >
-            Começar Jornada
-            <ChevronRight size={20} />
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-
-  const DashboardPage = () => {
-    return (
-      <div className="min-h-screen pb-20 lg:pb-8 flex flex-col items-center">
-        <header className="w-full max-w-7xl px-4 pt-8 pb-4">
-          <div className="glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col md:flex-row items-center gap-8 shadow-2xl relative overflow-hidden">
-            <div className="absolute -top-20 -right-20 w-64 h-64 bg-indigo-500/10 blur-3xl rounded-full"></div>
-            
-            <div className="relative group">
-              <div className="w-24 h-24 lg:w-32 lg:h-32 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg ring-4 ring-indigo-500/20 group-hover:scale-105 transition-transform">
-                <UserIcon size={48} className="text-white" />
-              </div>
-              <div className="absolute -bottom-2 -right-2 bg-amber-400 text-slate-900 font-extrabold px-3 py-1 rounded-full text-sm shadow-md">
-                LVL {user.level}
+      {/* DASHBOARD VIEW */}
+      {view === 'dashboard' && (
+        <div className="min-h-screen pb-20 flex flex-col items-center">
+          {showCombo && (
+            <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] pointer-events-none">
+              <div className="bg-amber-500 text-slate-900 font-black px-6 py-2 rounded-full shadow-2xl animate-pop flex items-center gap-2 border-2 border-white/50">
+                <Zap size={20} className="animate-pulse" /> COMBO x{comboCount}!
               </div>
             </div>
+          )}
 
-            <div className="flex-1 w-full space-y-4 text-center md:text-left">
-              <div className="flex flex-col md:flex-row md:items-end justify-between gap-2">
-                <div>
-                  <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-                    {user.username}
-                  </h1>
-                  <p className="text-indigo-300 font-medium">Explorador de Hábitos</p>
-                </div>
-                <div className="flex items-center justify-center md:justify-end gap-3">
-                  <div className="text-slate-400 text-sm font-bold flex items-center gap-2">
-                    <Trophy size={16} className="text-amber-400" />
-                    TOTAL XP: {user.totalXp}
-                  </div>
-                  <button 
-                    onClick={() => setView('settings')}
-                    className="p-2 bg-slate-800 rounded-xl text-slate-400 hover:text-white transition-colors border border-slate-700"
-                  >
-                    <SettingsIcon size={18} />
-                  </button>
-                </div>
+          <header className="w-full max-w-7xl px-4 pt-8 pb-4">
+            <div className="glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col md:flex-row items-center gap-8 shadow-2xl relative overflow-hidden">
+              <div className="relative group">
+                <div className="w-24 h-24 lg:w-32 lg:h-32 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg ring-4 ring-indigo-500/20 group-hover:scale-105 transition-transform"><UserIcon size={48} className="text-white" /></div>
+                <div className="absolute -bottom-2 -right-2 bg-amber-400 text-slate-900 font-extrabold px-3 py-1 rounded-full text-sm">LVL {user.level}</div>
               </div>
-
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-slate-400 px-1">
-                  <span>XP Progress</span>
-                  <span>{user.xp} / {XP_PER_LEVEL}</span>
+              <div className="flex-1 w-full space-y-4">
+                <div className="flex flex-col md:flex-row md:items-end justify-between gap-2">
+                  <h1 className="text-3xl font-extrabold text-white">{user.username}</h1>
+                  <div className="flex items-center gap-3"><div className="text-slate-400 text-sm font-bold flex items-center gap-2"><Trophy size={16} className="text-amber-400" /> TOTAL XP: {user.totalXp}</div>
+                  <button onClick={() => setView('settings')} className="p-2 bg-slate-800 rounded-xl text-slate-400 hover:text-white border border-slate-700"><SettingsIcon size={18} /></button></div>
                 </div>
-                <div className="w-full h-4 bg-slate-900/50 rounded-full border border-slate-700 p-0.5 overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-400 rounded-full shadow-[0_0_15px_rgba(99,102,241,0.5)] xp-bar-animate"
-                    style={{ width: `${xpProgress}%` }}
-                  ></div>
-                </div>
+                <div className="w-full h-4 bg-slate-900/50 rounded-full border border-slate-700 p-0.5"><div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full xp-bar-animate" style={{ width: `${xpProgress}%` }}></div></div>
               </div>
             </div>
-          </div>
-        </header>
+          </header>
 
-        <main className="w-full max-w-7xl px-4 grid grid-cols-1 lg:grid-cols-12 gap-6 mt-4">
-          <aside className="lg:col-span-4 space-y-6">
-            <div className="glass rounded-[2rem] p-6 shadow-xl relative overflow-hidden">
-                <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                        <BarChart2 size={20} className="text-indigo-400" />
-                        Ganhos de XP
-                    </h3>
-                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Últimos 7 dias</span>
-                </div>
-                <XPBarChart />
-                <div className="mt-4 flex items-center gap-2 text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                  <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
-                  <span>Indicador de Dia Perfeito</span>
-                </div>
-            </div>
-
-            <div className="glass rounded-[2rem] p-6 shadow-xl relative overflow-hidden">
-              <h3 className="text-lg font-bold mb-5 flex items-center gap-2">
-                <PieChart size={20} className="text-pink-400" />
-                Resumo por Categoria
-              </h3>
-              <div className="space-y-4">
-                {categoryProgress.filter(c => c.total > 0).map((cat) => (
-                  <div key={cat.name} className="space-y-1.5">
-                    <div className="flex justify-between text-xs font-bold">
-                      <span className="flex items-center gap-2 text-white">{cat.icon} {cat.name}</span>
-                      <span className="text-slate-400">{cat.reached}/{cat.total} metas</span>
+          <main className="w-full max-w-7xl px-4 grid grid-cols-1 lg:grid-cols-12 gap-6 mt-4">
+            <aside className="lg:col-span-4 space-y-6">
+              <div className="glass rounded-[2rem] p-6 shadow-xl relative overflow-hidden">
+                <h3 className="text-lg font-bold flex items-center gap-2 text-white mb-4"><BarChart2 size={20} className="text-indigo-400" /> Ganhos de XP</h3>
+                <div className="relative h-32 flex items-end justify-between gap-1 px-2">
+                  {xpByDay.map(({ xp, allCompleted }, idx) => (
+                    <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
+                      {allCompleted && <div className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse mb-1"></div>}
+                      <div className={`w-full rounded-t-lg bg-slate-700 hover:bg-slate-600 transition-all ${idx === 6 ? 'bg-indigo-500' : ''}`} style={{ height: `${(xp / Math.max(...xpByDay.map(v=>v.xp), 500)) * 100}%`, minHeight: '4px' }}></div>
                     </div>
-                    <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-indigo-500 transition-all duration-1000"
-                        style={{ width: `${cat.progress}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="glass rounded-[2rem] p-6 shadow-xl">
-              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                <TrendingUp size={20} className="text-emerald-400" />
-                Sua Jornada
-              </h3>
-              <div className="space-y-4">
-                {MILESTONES.map((m, idx) => (
-                  <div key={idx} className="flex items-center gap-4 group">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border-2 ${m.color.replace('text', 'border')} bg-slate-800/50`}>
-                      <Award size={20} className={m.color} />
-                    </div>
-                    <div>
-                      <div className={`font-bold ${m.color}`}>{m.rank}</div>
-                      <div className="text-xs text-slate-500 font-medium">{m.days === 0 ? 'Início' : `${m.days} dias de sequência`}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </aside>
-
-          <section className="lg:col-span-8 space-y-6">
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-              <h2 className="text-2xl font-bold flex items-center gap-3 text-slate-100">
-                <Flame size={28} className="text-orange-500 drop-shadow-[0_0_8px_rgba(249,115,22,0.4)]" />
-                Missões Ativas
-              </h2>
-              
-              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                <div className="relative group">
-                  <select 
-                    value={filterCategory}
-                    onChange={(e) => setFilterCategory(e.target.value)}
-                    className="appearance-none bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-8 py-2 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer text-white"
-                  >
-                    <option value="All">Todas as Categorias</option>
-                    {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                  </select>
-                  <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  ))}
+                  <svg className="absolute inset-0 pointer-events-none" preserveAspectRatio="none" viewBox="0 0 100 128">
+                    <polyline fill="none" stroke="#6366f1" strokeWidth="1" strokeOpacity="0.4" points={movingAverageXp.map((v, i) => `${(i / 6) * 100},${128 - (v / Math.max(...xpByDay.map(v=>v.xp), 500)) * 128}`).join(' ')} />
+                  </svg>
                 </div>
-
-                <div className="relative group">
-                  <select 
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as SortOption)}
-                    className="appearance-none bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-8 py-2 text-sm font-bold focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer text-white"
-                  >
-                    <option value="name">Ordenar por Nome</option>
-                    <option value="streak">Ordenar por Sequência</option>
-                    <option value="xp">Ordenar por XP</option>
-                  </select>
-                  <SortAsc size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                </div>
-
-                <button 
-                  onClick={() => setIsAdding(true)}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-xl flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition-all hover:scale-105 ml-auto sm:ml-0"
-                >
-                  <Plus size={20} />
-                  Criar
-                </button>
               </div>
-            </div>
 
-            {isAdding && (
-              <div className="glass rounded-[2rem] p-6 space-y-6 border-indigo-500/50 animate-in zoom-in-95 duration-200">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-xl text-white">Nova Missão</h3>
-                  <button onClick={() => setIsAdding(false)} className="text-slate-500 hover:text-white"><X size={24} /></button>
-                </div>
+              <div className="glass rounded-[2rem] p-6 shadow-xl">
+                <h3 className="text-lg font-bold mb-5 flex items-center gap-2 text-white"><PieChart size={20} className="text-pink-400" /> Categorias</h3>
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Nome do Hábito</label>
-                      <input 
-                        type="text" 
-                        value={newHabitName}
-                        onChange={(e) => setNewHabitName(e.target.value)}
-                        placeholder="Ex: Ler 10 páginas..."
-                        className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 transition-colors text-white"
-                      />
+                  {categoryProgress.filter(c => c.total > 0).map(cat => (
+                    <div key={cat.name} className="space-y-1">
+                      <div className="flex justify-between text-xs font-bold text-white"><span>{cat.icon} {cat.name}</span><span>{cat.reached}/{cat.total} metas</span></div>
+                      <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden"><div className="h-full bg-indigo-500" style={{ width: `${cat.progress}%` }}></div></div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest text-amber-500">Meta (Dias)</label>
-                      <input 
-                        type="number" 
-                        value={newHabitTarget}
-                        onChange={(e) => setNewHabitTarget(e.target.value)}
-                        placeholder="Ex: 21"
-                        className="w-full bg-slate-900/50 border border-amber-500/30 rounded-2xl px-6 py-4 focus:outline-none focus:border-amber-500 transition-colors font-bold text-amber-200"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Descrição (Opcional)</label>
-                    <textarea 
-                      value={newHabitDescription}
-                      onChange={(e) => setNewHabitDescription(e.target.value)}
-                      placeholder="Define o que queres alcançar..."
-                      className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-3 focus:outline-none focus:border-indigo-500 transition-colors text-white min-h-[80px]"
-                    />
-                  </div>
-                  <div className="flex gap-4 pt-4">
-                    <button 
-                      onClick={addHabit}
-                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl transition-all shadow-lg shadow-indigo-600/20"
-                    >
-                      Confirmar Hábito
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 gap-4">
-              {displayHabits.map((habit) => {
-                const { rank, color } = getCurrentRank(habit.streak);
-                const today = new Date().toISOString().split('T')[0];
-                const isDone = habit.lastCompleted === today;
-                const hasTargetReached = habit.targetStreak && habit.streak >= habit.targetStreak;
-                const isCelebrating = celebratingHabitId === habit.id;
-                const isEditingInline = editingHabitId === habit.id;
-                const isExpanded = showHistoryId === habit.id;
-                const isDeleting = confirmDeleteId === habit.id;
-
-                return (
-                  <div key={habit.id} className="space-y-2 group/card relative">
-                    {!isEditingInline && !isDeleting && (
-                      <button 
-                        onClick={() => setConfirmDeleteId(habit.id)}
-                        className="absolute top-3 right-3 p-2 bg-slate-800/80 rounded-full text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all opacity-0 group-hover/card:opacity-100 z-30"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
-
-                    {isDeleting && (
-                      <div className="absolute inset-0 bg-slate-900/95 z-40 rounded-[2rem] flex items-center justify-center p-4 gap-4 border border-red-500/50 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="text-center">
-                          <p className="text-sm font-bold text-white mb-3">Eliminar este hábito?</p>
-                          <div className="flex gap-3 justify-center">
-                            <button 
-                              onClick={() => removeHabit(habit.id)}
-                              className="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-500 transition-colors"
-                            >
-                              Confirmar
-                            </button>
-                            <button 
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-700 transition-colors"
-                            >
-                              Cancelar
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div 
-                        className={`glass rounded-[2rem] p-5 flex flex-col md:flex-row items-center gap-6 transition-all border-l-8 ${isDone ? 'border-l-emerald-500 bg-emerald-500/5' : 'border-l-indigo-600'} relative overflow-hidden ${isCelebrating ? 'animate-pop animate-gold-glow ring-4 ring-amber-400' : ''} ${hasTargetReached ? 'animate-gold-subtle border-l-amber-500' : ''}`}
-                    >
-                        {isCelebrating && [1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                        <div 
-                            key={n}
-                            className="sparkle-particle text-amber-400"
-                            style={{
-                            left: `${50 + (Math.random() - 0.5) * 80}%`,
-                            top: `${50 + (Math.random() - 0.5) * 80}%`,
-                            '--tw-translate-x': `${(Math.random() - 0.5) * 200}px`,
-                            '--tw-translate-y': `${(Math.random() - 0.5) * 200}px`,
-                            animationDelay: `${Math.random() * 0.2}s`
-                            } as React.CSSProperties}
-                        >
-                            <Star size={16 + Math.random() * 10} fill="currentColor" />
-                        </div>
-                        ))}
-
-                        {hasTargetReached && !isEditingInline && (
-                        <div className="absolute top-0 right-0 p-3 text-amber-400 animate-trophy-float z-10">
-                            <Trophy size={28} className="drop-shadow-[0_0_12px_rgba(251,191,36,0.6)]" />
-                        </div>
-                        )}
-
-                        <div 
-                            onClick={() => startInlineEdit(habit)}
-                            className={`flex-shrink-0 w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center text-3xl shadow-inner relative cursor-pointer hover:bg-slate-700 transition-colors ${isEditingInline ? 'ring-2 ring-indigo-500' : ''}`}
-                        >
-                            {isEditingInline ? (
-                                <Edit2 size={24} className="text-indigo-400" />
-                            ) : (
-                                habit.icon
-                            )}
-                        </div>
-
-                        <div className="flex-1 text-center md:text-left space-y-1">
-                        <div className="flex flex-wrap items-center justify-center md:justify-start gap-3">
-                            {isEditingInline ? (
-                            <div className="flex flex-col gap-2 w-full">
-                                <div className="flex items-center gap-2">
-                                  <input 
-                                      autoFocus
-                                      type="text"
-                                      value={inlineEditName}
-                                      onChange={(e) => setInlineEditName(e.target.value)}
-                                      className="bg-slate-800 border border-indigo-500 rounded-lg px-3 py-1 text-xl font-bold focus:outline-none flex-1 text-white"
-                                  />
-                                  <button onClick={saveInlineEdit} className="p-2 bg-emerald-600 rounded-lg text-white"><Check size={18} /></button>
-                                  <button onClick={cancelInlineEdit} className="p-2 bg-slate-700 rounded-lg text-white"><X size={18} /></button>
-                                </div>
-                                <textarea 
-                                  value={inlineEditDescription}
-                                  onChange={(e) => setInlineEditDescription(e.target.value)}
-                                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm focus:outline-none w-full min-h-[60px] text-slate-300"
-                                  placeholder="Descrição do hábito..."
-                                />
-                            </div>
-                            ) : (
-                            <div className="flex flex-wrap items-center justify-center md:justify-start gap-2">
-                              <h4 
-                                  onClick={() => startInlineEdit(habit)}
-                                  className="text-xl font-bold cursor-pointer hover:text-indigo-400 transition-colors flex items-center gap-2 group text-white"
-                              >
-                                  {habit.name}
-                                  <Edit2 size={14} className="opacity-0 group-hover:opacity-50 transition-opacity" />
-                              </h4>
-                              <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border border-current ${color}`}>
-                                {rank}
-                              </span>
-                            </div>
-                            )}
-                        </div>
-                        
-                        {!isEditingInline && (
-                          <div className="flex flex-wrap items-center justify-center md:justify-start gap-4 text-sm font-medium text-slate-400">
-                              <div className="flex items-center gap-1.5">
-                                  <Flame size={14} className="text-orange-500" />
-                                  <span className="text-orange-100">{habit.streak} dias</span>
-                              </div>
-                              <button 
-                                  onClick={() => setShowHistoryId(isExpanded ? null : habit.id)}
-                                  className={`flex items-center gap-1.5 transition-colors ${isExpanded ? 'text-indigo-400' : 'hover:text-indigo-400'}`}
-                              >
-                                  <CalendarIcon size={14} />
-                                  <span>Painel</span>
-                              </button>
-                              {habit.description && (
-                                <div className="hidden md:flex items-center gap-1.5 text-slate-500 italic truncate max-w-[200px]">
-                                  <Info size={12} />
-                                  <span className="truncate">{habit.description}</span>
-                                </div>
-                              )}
-                          </div>
-                        )}
-                        </div>
-
-                        <div className="flex items-center gap-3 relative z-20">
-                            <button 
-                                onClick={() => completeHabit(habit.id)}
-                                disabled={isDone}
-                                className={`h-14 px-8 rounded-2xl flex items-center gap-2 font-black transition-all active:scale-95 ${
-                                isDone 
-                                ? 'bg-emerald-500/20 text-emerald-400 cursor-default border border-emerald-500/30' 
-                                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
-                                }`}
-                            >
-                                {isDone ? <CheckCircle2 size={24} /> : <Plus size={24} />}
-                                {isDone ? 'FEITO' : 'CHECK-IN'}
-                            </button>
-                        </div>
-                    </div>
-
-                    {isExpanded && (
-                        <div className="glass rounded-[1.5rem] p-6 mx-4 animate-in slide-in-from-top-2 space-y-4">
-                            {habit.description && (
-                              <div className="space-y-2">
-                                <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                                  <Info size={12} />
-                                  Descrição
-                                </h5>
-                                <p className="text-sm text-slate-300 leading-relaxed bg-slate-900/40 p-3 rounded-xl border border-slate-800/50">
-                                  {habit.description}
-                                </p>
-                              </div>
-                            )}
-
-                            <div className="space-y-3">
-                                <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                                    <CalendarIcon size={12} />
-                                    Atividade dos Últimos 30 Dias
-                                </h5>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {Array.from({ length: 30 }, (_, i) => {
-                                        const d = new Date();
-                                        d.setDate(d.getDate() - (29 - i));
-                                        const dStr = d.toISOString().split('T')[0];
-                                        const isCompleted = habit.history.includes(dStr);
-                                        return (
-                                            <div 
-                                                key={dStr} 
-                                                title={dStr}
-                                                className={`w-5 h-5 rounded-md transition-all ${isCompleted ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.3)]' : 'bg-slate-800'}`}
-                                            ></div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        </main>
-
-        <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] lg:hidden z-40">
-          <div className="glass rounded-full p-2 flex items-center justify-between border-slate-700 shadow-2xl">
-            <div className="flex items-center gap-3 pl-4">
-               <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-black text-white">
-                 {user.level}
-               </div>
-               <span className="text-xs font-bold text-slate-300">Nível {user.level}</span>
-            </div>
-            <button 
-              onClick={() => setIsAdding(true)}
-              className="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center shadow-lg shadow-indigo-600/40"
-            >
-              <Plus size={24} className="text-white" />
-            </button>
-            <div className="flex items-center gap-3 pr-4 text-right">
-               <button onClick={() => setView('settings')} className="p-2 text-slate-400">
-                  <SettingsIcon size={20} />
-               </button>
-            </div>
-          </div>
-        </nav>
-
-        {undoAction && (
-          <div className="fixed bottom-24 lg:bottom-12 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-8">
-            <div className="glass bg-slate-900 border-indigo-500/50 rounded-2xl px-6 py-4 flex items-center gap-4 shadow-[0_10px_40px_rgba(0,0,0,0.5)] border">
-              <div className="flex flex-col">
-                <span className="text-sm font-bold text-white">Missão concluída!</span>
-                <span className="text-xs text-slate-400">Tens 10 segundos para anular.</span>
-              </div>
-              <div className="h-8 w-[1px] bg-slate-700 mx-2"></div>
-              <button 
-                onClick={undoCompletion}
-                className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-black text-sm uppercase tracking-widest transition-colors"
-              >
-                <RotateCcw size={16} />
-                Anular
-              </button>
-              <button 
-                onClick={() => setUndoAction(null)}
-                className="p-1 text-slate-500 hover:text-slate-300 transition-colors"
-              >
-                <X size={18} />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const SettingsPage = () => (
-    <div className="min-h-screen pb-20 flex flex-col items-center">
-      <header className="w-full max-w-2xl px-4 pt-12 pb-8 flex items-center justify-between">
-        <button 
-          onClick={() => setView('dashboard')}
-          className="p-3 bg-slate-800 rounded-2xl text-slate-400 hover:text-white transition-colors"
-        >
-          <ArrowLeft size={24} />
-        </button>
-        <h2 className="text-2xl font-bold text-white">Definições</h2>
-        <div className="w-12"></div>
-      </header>
-
-      <main className="w-full max-w-2xl px-4 space-y-6">
-        <section className="glass rounded-[2rem] p-8 space-y-8">
-          <div className="space-y-6">
-            <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-              <UserIcon size={16} />
-              Perfil do Utilizador
-            </h3>
-            
-            <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-300">Nome de Exibição</label>
-              <input 
-                type="text" 
-                value={editUsername}
-                onChange={(e) => setEditUsername(e.target.value)}
-                className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 transition-all font-medium text-white"
-              />
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-700/50 space-y-6">
-            <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest flex items-center gap-2 pt-4">
-              <Layers size={16} />
-              Gerir Categorias
-            </h3>
-
-            <div className="bg-slate-900/50 rounded-2xl p-6 border border-slate-700/50 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase">Nome da Categoria</label>
-                  <input 
-                    type="text" 
-                    value={newCatName}
-                    onChange={(e) => setNewCatName(e.target.value)}
-                    placeholder="Ex: Lazer"
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 text-white"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase">Ícone</label>
-                  <div className="flex items-center gap-2 h-11 px-3 bg-slate-800 border border-slate-700 rounded-xl">
-                    <span className="text-xl">{newCatIcon}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-500 uppercase">Selecionar Ícone</label>
-                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-1 custom-scrollbar">
-                  {COMMON_ICONS.map(icon => (
-                    <button 
-                      key={icon}
-                      onClick={() => setNewCatIcon(icon)}
-                      className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl transition-all ${newCatIcon === icon ? 'bg-indigo-600 scale-110 shadow-lg' : 'bg-slate-800 hover:bg-slate-700'}`}
-                    >
-                      {icon}
-                    </button>
                   ))}
                 </div>
               </div>
 
-              <button 
-                onClick={addCategory}
-                disabled={!newCatName.trim()}
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 text-white shadow-lg shadow-indigo-600/20"
-              >
-                {editingCat ? <Save size={18} /> : <Plus size={18} />}
-                {editingCat ? 'Atualizar Categoria' : 'Adicionar Nova Categoria'}
-              </button>
-              
-              {editingCat && (
-                <button 
-                  onClick={() => { setEditingCat(null); setNewCatName(''); setNewCatIcon(COMMON_ICONS[0]); }}
-                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold text-slate-400"
-                >
-                  Cancelar Edição
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-2 mt-4">
-              {categories.map(cat => (
-                <div key={cat.name} className="flex items-center justify-between p-4 bg-slate-900/30 border border-slate-700/30 rounded-[1.5rem] group hover:bg-slate-900/50 transition-all">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center text-xl">
-                      {cat.icon}
+              <div className="glass rounded-[2rem] p-6 shadow-xl">
+                <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-white">
+                  <TrendingUp size={20} className="text-emerald-400" />
+                  Sua Jornada
+                </h3>
+                <div className="space-y-4">
+                  {MILESTONES.map((m, idx) => (
+                    <div key={idx} className="flex items-center gap-4 group">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center border-2 ${m.color.replace('text', 'border')} bg-slate-800/50`}>
+                        <Award size={20} className={m.color} />
+                      </div>
+                      <div>
+                        <div className={`font-bold ${m.color}`}>{m.rank}</div>
+                        <div className="text-xs text-slate-500 font-medium">{m.days === 0 ? 'Início' : `${m.days} dias de sequência`}</div>
+                      </div>
                     </div>
-                    <span className="font-bold text-white">{cat.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button 
-                      onClick={() => startEditCategory(cat)}
-                      className="p-2 text-slate-500 hover:text-indigo-400 transition-colors"
-                      title="Editar"
-                    >
-                      <Edit2 size={18} />
-                    </button>
-                    <button 
-                      onClick={() => removeCategory(cat.name)}
-                      className="p-2 text-slate-500 hover:text-red-400 transition-colors"
-                      title="Remover"
-                    >
-                      <Trash2 size={18} />
-                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {aiTip && <div className="glass rounded-[2rem] p-6 bg-indigo-900/20 border-indigo-500/30 animate-in slide-in-from-bottom-2"><h4 className="text-xs font-black text-indigo-400 uppercase mb-2">Dica do Mestre</h4><p className="text-sm italic text-indigo-100">"{aiTip}"</p></div>}
+            </aside>
+
+            <section className="lg:col-span-8 space-y-6">
+              <div className="flex items-center justify-between gap-4">
+                <h2 className="text-2xl font-bold flex items-center gap-3 text-white"><Flame size={28} className="text-orange-500" /> Missões</h2>
+                <button onClick={() => setIsAdding(true)} className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-xl flex items-center gap-2 transition-all hover:scale-105"><Plus size={20} /> Criar</button>
+              </div>
+
+              {isAdding && (
+                <div className="glass rounded-[2rem] p-6 space-y-6 border-indigo-500/50 animate-in zoom-in-95">
+                  <div className="flex items-center justify-between"><h3 className="font-bold text-xl text-white">Nova Missão</h3><button onClick={() => setIsAdding(false)} className="text-slate-500 hover:text-white"><X size={24} /></button></div>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Hábito</label>
+                        <input type="text" value={newHabitName} onChange={e => setNewHabitName(e.target.value)} placeholder="Ex: Ler..." className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 text-white" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Categoria</label>
+                        <select value={newHabitCat} onChange={e => setNewHabitCat(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-4 py-4 focus:outline-none focus:border-indigo-500 text-white appearance-none">
+                          {categories.map(c => <option key={c.name} value={c.name}>{c.icon} {c.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Meta (Dias)</label>
+                        <input type="number" value={newHabitTarget} onChange={e => setNewHabitTarget(e.target.value)} placeholder="Ex: 21" className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 focus:outline-none focus:border-indigo-500 text-white" />
+                      </div>
+                    </div>
+                    <div><label className="block text-xs font-bold text-slate-500 uppercase mb-2">Descrição</label>
+                    <textarea value={newHabitDescription} onChange={e => setNewHabitDescription(e.target.value)} placeholder="Define o teu objetivo..." className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-3 focus:outline-none focus:border-indigo-500 text-white min-h-[80px]" /></div>
+                    <button onClick={addHabit} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-2xl shadow-lg transition-transform active:scale-[0.98]">Confirmar Missão Épica</button>
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-4">
+                {displayHabits.map(habit => {
+                  const { rank, color } = getCurrentRank(habit.streak);
+                  const isDone = habit.lastCompleted === new Date().toISOString().split('T')[0];
+                  const hasTargetReached = habit.targetStreak && habit.streak >= habit.targetStreak;
+                  const isCelebrating = celebratingHabitId === habit.id;
+                  const isDeleting = confirmDeleteId === habit.id;
+                  const isEditingInline = editingHabitId === habit.id;
+                  const pCount = Math.min(8 + Math.floor(habit.streak / 3), 20);
+
+                  return (
+                    <div key={habit.id} className={`group relative transition-all duration-300 ${habit.isPaused ? 'opacity-50 grayscale-[0.5]' : ''}`}>
+                      {/* Top-Left: Inline Edit Icon */}
+                      {!isDeleting && !isEditingInline && (
+                        <button 
+                          onClick={() => startInlineEdit(habit)} 
+                          className="absolute top-3 left-3 p-2 bg-slate-800/90 backdrop-blur-md rounded-full text-indigo-400 hover:text-indigo-300 hover:scale-110 opacity-0 group-hover:opacity-100 z-30 transition-all shadow-lg border border-indigo-500/20"
+                          title="Editar hábito"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                      )}
+
+                      {/* Top-Right: Actions */}
+                      {!isDeleting && !isEditingInline && (
+                        <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 z-30 transition-all">
+                          <button 
+                            onClick={() => togglePauseHabit(habit.id)} 
+                            className={`p-2 bg-slate-800/90 backdrop-blur-md rounded-full ${habit.isPaused ? 'text-emerald-400 hover:text-emerald-300' : 'text-amber-400 hover:text-amber-300'} hover:scale-110 shadow-lg border border-white/5`}
+                            title={habit.isPaused ? "Retomar Hábito" : "Ignorar Hábito (Suspender)"}
+                          >
+                            {habit.isPaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}
+                          </button>
+                          <button 
+                            onClick={() => setConfirmDeleteId(habit.id)} 
+                            className="p-2 bg-slate-800/90 backdrop-blur-md rounded-full text-slate-500 hover:text-red-400 hover:scale-110 shadow-lg border border-white/5"
+                            title="Eliminar hábito"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      )}
+
+                      {isDeleting && (
+                        <div className="absolute inset-0 bg-slate-900/95 z-40 rounded-[2rem] flex items-center justify-center p-4 gap-4 border border-red-500/50 animate-in zoom-in-95">
+                          <div className="text-center"><p className="text-sm font-bold text-white mb-3">Eliminar missão?</p>
+                          <div className="flex gap-3"><button onClick={() => removeHabit(habit.id)} className="px-5 py-2 bg-red-600 text-white rounded-xl text-xs font-black shadow-lg">SIM</button><button onClick={() => setConfirmDeleteId(null)} className="px-5 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-black">NÃO</button></div></div>
+                        </div>
+                      )}
+
+                      <div className={`glass rounded-[2rem] p-5 flex flex-col md:flex-row items-center gap-6 transition-all border-l-8 ${isDone ? 'border-l-emerald-500 bg-emerald-500/5' : 'border-l-indigo-600'} relative overflow-hidden ${isCelebrating ? 'animate-pop animate-gold-glow ring-4 ring-amber-400' : ''} ${hasTargetReached ? 'animate-gold-subtle border-l-amber-500' : ''}`}>
+                        
+                        {/* Target Reached Visual Reward */}
+                        {hasTargetReached && !isEditingInline && (
+                          <div className="absolute -top-1 -right-1 p-4 text-amber-400 animate-trophy-float z-10 pointer-events-none opacity-80">
+                            <Trophy size={32} className="drop-shadow-[0_0_15px_rgba(251,191,36,0.8)]" />
+                          </div>
+                        )}
+
+                        {isCelebrating && Array.from({ length: pCount }).map((_, n) => (
+                          <div key={n} className="sparkle-particle text-amber-400" style={{ left: `${50 + (Math.random()-0.5)*80}%`, top: `${50 + (Math.random()-0.5)*80}%`, '--tw-translate-x': `${(Math.random()-0.5)*300}px`, '--tw-translate-y': `${(Math.random()-0.5)*300}px`, animationDelay: `${Math.random()*0.2}s` } as any}><Star size={12 + Math.random()*14} fill="currentColor" /></div>
+                        ))}
+                        
+                        <div className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center text-3xl shadow-inner relative group/icon overflow-hidden">
+                          {isEditingInline ? (
+                            <input 
+                              type="text" 
+                              value={inlineEditIcon} 
+                              onChange={e => setInlineEditIcon(e.target.value)} 
+                              className="w-full h-full bg-slate-900/50 text-center focus:outline-none border-2 border-indigo-500/50 rounded-2xl"
+                              title="Altera o emoji"
+                            />
+                          ) : (
+                            habit.icon
+                          )}
+                          {habit.isPaused && (
+                            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-[2px] flex items-center justify-center rounded-2xl">
+                              <PauseCircle size={24} className="text-white drop-shadow-lg" />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex-1 text-center md:text-left w-full">
+                          <div className="flex flex-col md:flex-row md:items-center justify-center md:justify-start gap-2 mb-1">
+                            {isEditingInline ? (
+                              <div className="flex flex-col gap-2 w-full max-w-sm">
+                                <input 
+                                  autoFocus
+                                  type="text" 
+                                  value={inlineEditName} 
+                                  onChange={e => setInlineEditName(e.target.value)}
+                                  placeholder="Nome do hábito..."
+                                  className="w-full bg-slate-900/80 border border-indigo-500 rounded-xl px-4 py-2 font-bold text-white focus:outline-none shadow-inner"
+                                />
+                                <div className="flex gap-2 items-center">
+                                  <select 
+                                    value={inlineEditCat} 
+                                    onChange={e => setInlineEditCat(e.target.value)}
+                                    className="flex-1 bg-slate-900/80 border border-indigo-500/30 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-300 focus:outline-none"
+                                  >
+                                    {categories.map(c => <option key={c.name} value={c.name}>{c.icon} {c.name}</option>)}
+                                  </select>
+                                  <button onClick={saveInlineEdit} className="p-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-white shadow-lg transition-transform active:scale-90"><Check size={18}/></button>
+                                  <button onClick={() => setEditingHabitId(null)} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-white shadow-lg transition-transform active:scale-90"><X size={18}/></button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <h4 className={`text-xl font-black ${habit.isPaused ? 'text-slate-500' : 'text-white'} flex items-center gap-2 truncate`}>
+                                  {habit.name}
+                                </h4>
+                                {habit.isPaused && <span className="text-[10px] font-black text-slate-600 border border-slate-700/50 px-2 py-0.5 rounded-full uppercase tracking-tighter">Suspenso</span>}
+                                {!habit.isPaused && <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border border-current transition-colors ${color}`}>{rank}</span>}
+                              </div>
+                            )}
+                          </div>
+                          {!isEditingInline && (
+                            <div className="flex items-center justify-center md:justify-start gap-4 text-xs font-bold">
+                              <div className="flex items-center gap-1.5 text-slate-400 group-hover:text-orange-400 transition-colors">
+                                <Flame size={14} className={habit.isPaused ? "text-slate-600" : "text-orange-500"} /> 
+                                <span className={habit.isPaused ? "text-slate-600" : "text-orange-100"}>{habit.streak} dias</span>
+                              </div>
+                              <button onClick={() => setShowHistoryId(showHistoryId === habit.id ? null : habit.id)} className="flex items-center gap-1.5 text-slate-500 hover:text-indigo-400 transition-colors">
+                                <CalendarIcon size={14} /> Histórico
+                              </button>
+                              <div className="text-[10px] text-slate-600 hidden md:block">Categoria: {habit.category}</div>
+                            </div>
+                          )}
+                        </div>
+
+                        <button 
+                          onClick={() => completeHabit(habit.id)} 
+                          disabled={isDone || habit.isPaused} 
+                          className={`h-14 min-w-[140px] px-8 rounded-2xl flex items-center justify-center gap-3 font-black transition-all active:scale-95 ${isDone ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/40 shadow-inner' : habit.isPaused ? 'bg-slate-800/50 text-slate-700 cursor-not-allowed border border-white/5' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xl shadow-indigo-600/20 hover:scale-[1.02]'}`}
+                        >
+                          {isDone ? <CheckCircle2 size={24} className="animate-bounce" /> : habit.isPaused ? <PauseCircle size={22}/> : <Plus size={24} className="group-hover:rotate-90 transition-transform" />} 
+                          <span>{isDone ? 'FEITO' : habit.isPaused ? 'PAUSA' : 'MISSÃO'}</span>
+                        </button>
+                      </div>
+
+                      {/* Calendar / History Expanded Panel */}
+                      {showHistoryId === habit.id && (
+                        <div className="glass rounded-[2rem] p-6 mx-4 mt-2 animate-in slide-in-from-top-4 space-y-6 shadow-2xl border-indigo-500/10">
+                          {habit.description && (
+                            <div className="space-y-2">
+                              <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] flex items-center gap-2"><Info size={12} className="text-indigo-400" /> Sobre a Missão</h5>
+                              <p className="text-sm text-slate-300 bg-slate-900/60 p-4 rounded-2xl border border-white/5 italic">"{habit.description}"</p>
+                            </div>
+                          )}
+                          
+                          <div className="space-y-4">
+                            <div className="flex justify-between items-center">
+                              <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Fluxo Temporal (30 Dias)</h5>
+                              <div className="flex gap-4">
+                                <div className="flex items-center gap-1.5 text-[9px] font-bold text-amber-300/80">
+                                  <Star size={10} className="fill-amber-300" /> DIA PERFEITO
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[9px] font-bold text-emerald-400/80">
+                                  <div className="w-2 h-2 rounded bg-emerald-500"></div> CONCLUÍDO
+                                </div>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-7 sm:grid-cols-10 md:grid-cols-15 gap-2">
+                              {Array.from({ length: 30 }).map((_, i) => { 
+                                const d = new Date(); 
+                                d.setDate(d.getDate() - (29 - i)); 
+                                const s = d.toISOString().split('T')[0]; 
+                                const isHabitDone = habit.history.includes(s);
+                                
+                                // Global Perfect Day Logic: All ACTIVE habits on that day were completed
+                                // We check history for all currently existing habits.
+                                const activeHabitsCount = habits.filter(h => !h.isPaused).length;
+                                const totalDoneOnDay = habits.filter(h => h.history.includes(s)).length;
+                                const isGlobalPerfect = activeHabitsCount > 0 && totalDoneOnDay >= activeHabitsCount;
+
+                                return (
+                                  <div 
+                                    key={s} 
+                                    title={isGlobalPerfect ? `Dia Perfeito! (${s})` : s} 
+                                    className={`aspect-square w-full min-w-[20px] rounded-lg flex items-center justify-center relative transition-all duration-300 ${isHabitDone ? 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.4)]' : 'bg-slate-800/80 hover:bg-slate-700'}`}
+                                  >
+                                    {isGlobalPerfect && (
+                                      <div className="absolute -top-1 -right-1 z-10 drop-shadow-[0_0_5px_rgba(251,191,36,0.8)]">
+                                        <Star size={12} className="text-amber-300 fill-amber-300 animate-pulse" />
+                                      </div>
+                                    )}
+                                    <span className="text-[8px] opacity-20 pointer-events-none">{d.getDate()}</span>
+                                  </div>
+                                ); 
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </main>
           
-          <div className="pt-4 border-t border-slate-700/50 space-y-4">
-             <button 
-               onClick={saveSettings}
-               className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-600/20"
-             >
-               <Save size={20} />
-               Guardar Perfil
-             </button>
-             
-             <button 
-               onClick={handleLogout}
-               className="w-full bg-slate-800 hover:bg-red-500/20 hover:text-red-400 text-slate-400 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-all border border-transparent hover:border-red-500/30"
-             >
-               <LogOut size={20} />
-               Terminar Sessão
-             </button>
-          </div>
-        </section>
-      </main>
-    </div>
-  );
+          {/* Mobile Nav */}
+          <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm lg:hidden z-40">
+            <div className="glass rounded-full p-2 flex items-center justify-between border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
+              <div className="flex items-center gap-3 pl-4">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-sm font-black text-white shadow-lg ring-2 ring-white/10">{user.level}</div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black text-indigo-400 leading-none">NÍVEL</span>
+                  <span className="text-xs font-bold text-slate-200">ASCENSÃO</span>
+                </div>
+              </div>
+              <button onClick={() => setIsAdding(true)} className="w-14 h-14 bg-indigo-600 hover:bg-indigo-500 rounded-full flex items-center justify-center shadow-2xl transition-transform active:scale-90 border-4 border-slate-900">
+                <Plus size={28} className="text-white" />
+              </button>
+              <button onClick={() => setView('settings')} className="p-4 text-slate-400 hover:text-white transition-colors">
+                <SettingsIcon size={22} />
+              </button>
+            </div>
+          </nav>
 
-  return (
-    <div className="min-h-screen">
-      {view === 'login' && <LoginPage />}
-      {view === 'dashboard' && <DashboardPage />}
-      {view === 'settings' && <SettingsPage />}
+          {/* Undo Toast */}
+          {undoAction && (
+            <div className="fixed bottom-28 lg:bottom-12 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-8">
+              <div className="glass bg-slate-900/90 border-indigo-500/50 rounded-2xl px-6 py-4 flex items-center gap-5 shadow-2xl border backdrop-blur-xl">
+                <div className="flex flex-col">
+                  <span className="text-sm font-black text-white flex items-center gap-2">MISSÃO CONCLUÍDA <CheckCircle2 size={14} className="text-emerald-400" /></span>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase">Tempo de reversão: 10s</span>
+                </div>
+                <div className="h-8 w-px bg-slate-700"></div>
+                <button onClick={undoCompletion} className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-black text-xs uppercase transition-all hover:scale-105 active:scale-95">
+                  <RotateCcw size={16} /> ANULAR
+                </button>
+                <button onClick={() => setUndoAction(null)} className="p-1 text-slate-500 hover:text-white transition-colors">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
+      {/* SETTINGS VIEW */}
+      {view === 'settings' && (
+        <div className="min-h-screen pb-20 flex flex-col items-center">
+          <header className="w-full max-w-2xl px-4 pt-12 pb-8 flex items-center justify-between">
+            <button onClick={() => setView('dashboard')} className="p-3 bg-slate-800 rounded-2xl text-slate-400 hover:text-white transition-all shadow-lg active:scale-90">
+              <ArrowLeft size={24} />
+            </button>
+            <h2 className="text-2xl font-black text-white tracking-tight uppercase">Definições</h2>
+            <div className="w-12"></div>
+          </header>
+          <main className="w-full max-w-2xl px-4 space-y-6">
+            <section className="glass rounded-[2.5rem] p-8 space-y-8 shadow-2xl border-white/5 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 blur-[50px] rounded-full"></div>
+              
+              <div className="space-y-6">
+                <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
+                  <UserIcon size={14} className="text-indigo-400" /> Identidade do Herói
+                </h3>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-400">Nome de Visualização</label>
+                  <input type="text" value={editUsername} onChange={e => setEditUsername(e.target.value)} className="w-full bg-slate-900/50 border border-slate-700 rounded-2xl px-6 py-4 text-white font-bold focus:outline-none focus:border-indigo-500 transition-colors" />
+                </div>
+              </div>
+
+              <div className="pt-8 border-t border-slate-800/50 space-y-8">
+                <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
+                  <Layers size={14} className="text-purple-400" /> Forjar Categorias
+                </h3>
+                <div className="bg-slate-900/40 rounded-[2rem] p-6 border border-white/5 space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-500">NOME</label>
+                      <input type="text" value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Ex: Meditação" className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-500">SÍMBOLO</label>
+                      <div className="flex items-center gap-2 h-[52px] px-4 bg-slate-800/50 border border-slate-700 rounded-xl">
+                        <span className="text-2xl">{newCatIcon}</span>
+                        <span className="text-[10px] text-slate-500 font-bold ml-auto">SELECCIONADO</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 p-1 max-h-40 overflow-y-auto custom-scrollbar">
+                    {COMMON_ICONS.map(i => (
+                      <button 
+                        key={i} 
+                        onClick={() => setNewCatIcon(i)} 
+                        className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl transition-all ${newCatIcon === i ? 'bg-indigo-600 scale-110 shadow-lg ring-2 ring-white/20' : 'bg-slate-800 hover:bg-slate-700'}`}
+                      >
+                        {i}
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={addCategory} disabled={!newCatName.trim()} className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-black rounded-2xl shadow-xl transition-all active:scale-95 uppercase text-xs tracking-widest">Adicionar às Crónicas</button>
+                </div>
+                
+                <div className="space-y-3">
+                  {categories.map(c => (
+                    <div key={c.name} className="flex items-center justify-between p-5 bg-slate-900/30 border border-white/5 rounded-[1.5rem] group hover:bg-slate-900/50 transition-all">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center text-xl shadow-inner">{c.icon}</div>
+                        <span className="font-bold text-white tracking-tight">{c.name}</span>
+                      </div>
+                      <button onClick={() => setCategories(categories.filter(ca=>ca.name!==c.name))} className="p-3 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all opacity-0 group-hover:opacity-100">
+                        <Trash2 size={20} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-8 border-t border-slate-800/50 space-y-4">
+                <button onClick={() => setView('dashboard')} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-5 rounded-[1.5rem] shadow-2xl transition-all active:scale-95 uppercase text-xs tracking-[0.2em]">Guardar Alterações</button>
+                <button onClick={handleLogout} className="w-full bg-slate-800 hover:bg-red-500/10 hover:text-red-400 text-slate-500 font-black py-5 rounded-[1.5rem] border border-transparent hover:border-red-500/20 flex items-center justify-center gap-3 transition-all uppercase text-xs tracking-[0.2em]">
+                  <LogOut size={20} /> Terminar Sessão
+                </button>
+              </div>
+            </section>
+          </main>
+        </div>
+      )}
+
+      {/* Level Up Fullscreen Animation Overlay */}
       {showLevelUp && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none px-4">
-          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[3rem] shadow-[0_0_100px_rgba(99,102,241,0.6)] text-center animate-bounce border-4 border-amber-400/50">
-            <Trophy size={64} className="mx-auto text-amber-400 mb-4" />
-            <h2 className="text-4xl font-black text-white mb-2">LEVEL UP!</h2>
-            <p className="text-xl font-bold text-amber-200">Chegaste ao Nível {user.level}!</p>
+        <div className="fixed inset-0 flex items-center justify-center z-[100] pointer-events-none px-4 bg-indigo-950/40 backdrop-blur-sm animate-in fade-in duration-500">
+          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-12 rounded-[3.5rem] shadow-[0_0_100px_rgba(99,102,241,0.6)] text-center animate-bounce border-4 border-amber-400/50 relative overflow-hidden">
+            <div className="absolute -inset-20 bg-white/10 blur-[50px] rotate-45 animate-pulse"></div>
+            <Trophy size={80} className="mx-auto text-amber-400 mb-6 drop-shadow-2xl" />
+            <h2 className="text-5xl font-black text-white mb-2 tracking-tighter italic">LEVEL UP!</h2>
+            <div className="h-1 w-24 bg-amber-400 mx-auto rounded-full mb-4"></div>
+            <p className="text-2xl font-bold text-amber-200">ASCENSÃO AO NÍVEL {user.level}!</p>
           </div>
         </div>
       )}

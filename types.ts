@@ -12,6 +12,7 @@ export interface Habit {
   xp: number;
   icon: string;
   targetStreak?: number; 
+  isPaused?: boolean;
 }
 
 export interface UserStats {
